@@ -58,6 +58,13 @@ function humanBytes(n) {
 }
 function now() { return Date.now(); }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function formatTime() { 
+  const now = new Date();
+  return `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
+}
+function formatThreadId(threadId, attempt) {
+  return `T${threadId.toString().padStart(2, '0')}-${attempt}`;
+}
 
 // -------- 默认请求头 --------
 const defaultHeaders = {
@@ -150,7 +157,7 @@ async function downloadLoop(threadId) {
         addDownload();
         const dur = (now() - startTs) / 1000;
         console.log(
-          `[T${threadId} #${attempt}] 连接完成 | 用时 ${dur.toFixed(3)}s | 响应大小 ${contentLength ? humanBytes(contentLength) : '未知'} | 总下载次数 ${totalDownloads} | 累计流量 ${humanBytes(Number(totalBytesAll))}`
+          `${formatTime()} [${totalDownloads}] [${formatThreadId(threadId, attempt)}] 用时 ${dur.toFixed(3)}s | 连接完成 | 响应大小 ${contentLength ? humanBytes(contentLength) : '未知'}`
         );
       } else {
         // 正常下载模式
@@ -167,7 +174,7 @@ async function downloadLoop(threadId) {
           const pct = contentLength ? ` ${(received / contentLength * 100).toFixed(1)}%` : '';
           const sizeStr = contentLength ? `${humanBytes(received)} / ${humanBytes(contentLength)}` : `${humanBytes(received)} / ?`;
           logLine(
-            `[T${threadId} #${attempt}] 进度${pct} | ${sizeStr} | 速度 ${humanBytes(speed)}/s | 下载次数 ${totalDownloads} | 总流量 ${humanBytes(Number(totalBytesAll))}`
+            `${formatTime()} [${totalDownloads}] [${formatThreadId(threadId, attempt)}] 进度${pct} | ${sizeStr} | 速度 ${humanBytes(speed)}/s`
           );
         }, 1000);
 
@@ -182,12 +189,12 @@ async function downloadLoop(threadId) {
         const dur = (now() - startTs) / 1000;
         const avgSpeed = received / Math.max(dur, 0.001);
         console.log(
-          `[T${threadId} #${attempt}] 完成 | 用时 ${dur.toFixed(2)}s | 大小 ${humanBytes(received)}${contentLength ? `（标称 ${humanBytes(contentLength)}）` : ''} | 平均速度 ${humanBytes(avgSpeed)}/s | 总下载次数 ${totalDownloads} | 累计 ${humanBytes(Number(totalBytesAll))}`
+          `${formatTime()} [${totalDownloads}] [${formatThreadId(threadId, attempt)}] 用时 ${dur.toFixed(2)}s | 下载完成 | 大小 ${humanBytes(received)} | 平均速度 ${humanBytes(avgSpeed)}/s`
         );
       }
     } catch (err) {
       if (sink) try { sink.destroy(); } catch {}
-      logLine(`[T${threadId} #${attempt}] 出错：${err.message}，${RETRY_DELAY_MS}ms 后重试`);
+      logLine(`${formatTime()} [${totalDownloads}] [${formatThreadId(threadId, attempt)}] 出错：${err.message}，${RETRY_DELAY_MS}ms 后重试`);
       await sleep(RETRY_DELAY_MS);
     } finally {
       attempt++;
@@ -199,10 +206,19 @@ async function downloadLoop(threadId) {
 (async () => {
   console.log(`URL=${TARGET}`);
   console.log(`THREADS=${THREADS} | OUT=${OUTDIR} | SAVE=${SAVE} | CONNECT_ONLY=${CONNECT_ONLY} | TIMEOUT=${REQ_TIMEOUT_MS}ms`);
+  console.log('开始执行...');
+  
+  // 定时显示总体统计
+  if (!QUIET) {
+    setInterval(() => {
+      console.log(`${formatTime()} [统计] 总下载次数: ${totalDownloads} | 累计流量: ${humanBytes(Number(totalBytesAll))}`);
+    }, 10000); // 每10秒显示一次统计
+  }
+  
   for (let i = 0; i < THREADS; i++) {
     // 彼此错峰100ms，减少同时建连
     await sleep(100);
     // 不 await，直接并发
-    downloadLoop(i).catch(e => console.error(`[T${i}] Fatal:`, e));
+    downloadLoop(i).catch(e => console.error(`${formatTime()} [Fatal] [T${i.toString().padStart(2, '0')}] 线程崩溃:`, e));
   }
 })();
