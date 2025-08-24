@@ -4,7 +4,10 @@
  * 显示：文件大小、下载次数、进度、当前速度、总流量
  * 运行示例：
  *   node downloader.js --url https://example.com/file.zip --threads 4 --out downloads
+ *   node downloader.js --url https://example.com/file.zip --connect-only=true --threads 8
  * 默认带基础请求头，可用 --headers 覆盖
+ * 参数说明：
+ *   --connect-only=true  只刷连接数模式，收到响应后立即断开连接
  */
 
 const fs = require('fs');
@@ -27,6 +30,7 @@ const THREADS = parseInt(getArg('threads', '8'), 10);
 const OUTDIR = getArg('out', 'downloads');
 const SAVE = getArg('save', 'true') !== 'false'; // --save=false 可只统计不落盘
 const QUIET = getArg('quiet', 'false') === 'true'; // --quiet=true 只打印关键事件
+const CONNECT_ONLY = getArg('connect-only', 'false') === 'true'; // --connect-only=true 只刷连接数，收到响应就断开
 const REQ_TIMEOUT_MS = parseInt(getArg('timeout', '300000'), 10); // 单次请求超时(默认5分钟)
 const RETRY_DELAY_MS = parseInt(getArg('retryDelay', '1000'), 10); // 错误重试间隔
 const HEADERS = parseHeaders(getArg('headers', '')); // 形如 "User-Agent=MyUA;Authorization=Bearer xxx"
@@ -64,7 +68,9 @@ const defaultHeaders = {
 
 // -------- 全局统计 --------
 let totalBytesAll = 0n;
+let totalDownloads = 0; // 总下载次数
 function addTotal(n) { totalBytesAll += BigInt(n); }
+function addDownload() { totalDownloads++; }
 
 function logLine(s) {
   if (!QUIET) console.log(s);
@@ -99,7 +105,14 @@ function requestOnce(u, onData) {
           // return;
         }
         const len = res.headers['content-length'] ? parseInt(res.headers['content-length'], 10) : null;
-        resolve({ stream: res, contentLength: len });
+        
+        // 如果是只刷连接数模式，收到响应后立即断开
+        if (CONNECT_ONLY) {
+          res.destroy();
+          return resolve({ stream: null, contentLength: len, connectOnly: true });
+        }
+        
+        resolve({ stream: res, contentLength: len, connectOnly: false });
         res.on('data', (chunk) => onData(chunk.length));
       }
     );
@@ -125,42 +138,53 @@ async function downloadLoop(threadId) {
     const sink = SAVE ? fs.createWriteStream(filePath) : null;
 
     try {
-      const { stream, contentLength: len } = await requestOnce(TARGET, (n) => {
+      const { stream, contentLength: len, connectOnly } = await requestOnce(TARGET, (n) => {
         received += n;
         addTotal(n);
         if (sink) sink.write(Buffer.alloc(0)); // 触发 backpressure 计算（不实际写入空数据）
       });
       contentLength = len;
 
-      // 真正写入
-      if (sink) stream.pipe(sink);
-      const progressTimer = setInterval(() => {
-        const t = now();
-        const dt = Math.max(1, t - lastTickTs) / 1000;
-        const dBytes = received - lastTickBytes;
-        const speed = dBytes / dt;
-        lastTickTs = t;
-        lastTickBytes = received;
-
-        const pct = contentLength ? ` ${(received / contentLength * 100).toFixed(1)}%` : '';
-        const sizeStr = contentLength ? `${humanBytes(received)} / ${humanBytes(contentLength)}` : `${humanBytes(received)} / ?`;
-        logLine(
-          `[T${threadId} #${attempt}] 进度${pct} | ${sizeStr} | 速度 ${humanBytes(speed)}/s | 总流量 ${humanBytes(Number(totalBytesAll))}`
+      // 如果是只刷连接数模式，直接跳过下载
+      if (connectOnly) {
+        addDownload();
+        const dur = (now() - startTs) / 1000;
+        console.log(
+          `[T${threadId} #${attempt}] 连接完成 | 用时 ${dur.toFixed(3)}s | 响应大小 ${contentLength ? humanBytes(contentLength) : '未知'} | 总下载次数 ${totalDownloads} | 累计流量 ${humanBytes(Number(totalBytesAll))}`
         );
-      }, 1000);
+      } else {
+        // 正常下载模式
+        // 真正写入
+        if (sink) stream.pipe(sink);
+        const progressTimer = setInterval(() => {
+          const t = now();
+          const dt = Math.max(1, t - lastTickTs) / 1000;
+          const dBytes = received - lastTickBytes;
+          const speed = dBytes / dt;
+          lastTickTs = t;
+          lastTickBytes = received;
 
-      await new Promise((res, rej) => {
-        stream.on('end', res);
-        stream.on('error', rej);
-        if (sink) sink.on('error', rej);
-      });
+          const pct = contentLength ? ` ${(received / contentLength * 100).toFixed(1)}%` : '';
+          const sizeStr = contentLength ? `${humanBytes(received)} / ${humanBytes(contentLength)}` : `${humanBytes(received)} / ?`;
+          logLine(
+            `[T${threadId} #${attempt}] 进度${pct} | ${sizeStr} | 速度 ${humanBytes(speed)}/s | 下载次数 ${totalDownloads} | 总流量 ${humanBytes(Number(totalBytesAll))}`
+          );
+        }, 1000);
 
-      clearInterval(progressTimer);
-      const dur = (now() - startTs) / 1000;
-      const avgSpeed = received / Math.max(dur, 0.001);
-      console.log(
-        `[T${threadId} #${attempt}] 完成 | 用时 ${dur.toFixed(2)}s | 大小 ${humanBytes(received)}${contentLength ? `（标称 ${humanBytes(contentLength)}）` : ''} | 平均速度 ${humanBytes(avgSpeed)}/s | 累计 ${humanBytes(Number(totalBytesAll))}`
-      );
+        await new Promise((res, rej) => {
+          stream.on('end', res);
+          stream.on('error', rej);
+          if (sink) sink.on('error', rej);
+        });
+
+        clearInterval(progressTimer);
+        addDownload();
+        const dur = (now() - startTs) / 1000;
+        const avgSpeed = received / Math.max(dur, 0.001);
+        console.log(
+          `[T${threadId} #${attempt}] 完成 | 用时 ${dur.toFixed(2)}s | 大小 ${humanBytes(received)}${contentLength ? `（标称 ${humanBytes(contentLength)}）` : ''} | 平均速度 ${humanBytes(avgSpeed)}/s | 总下载次数 ${totalDownloads} | 累计 ${humanBytes(Number(totalBytesAll))}`
+        );
+      }
     } catch (err) {
       if (sink) try { sink.destroy(); } catch {}
       logLine(`[T${threadId} #${attempt}] 出错：${err.message}，${RETRY_DELAY_MS}ms 后重试`);
@@ -174,7 +198,7 @@ async function downloadLoop(threadId) {
 // -------- 主程序：并发启动 --------
 (async () => {
   console.log(`URL=${TARGET}`);
-  console.log(`THREADS=${THREADS} | OUT=${OUTDIR} | SAVE=${SAVE} | TIMEOUT=${REQ_TIMEOUT_MS}ms`);
+  console.log(`THREADS=${THREADS} | OUT=${OUTDIR} | SAVE=${SAVE} | CONNECT_ONLY=${CONNECT_ONLY} | TIMEOUT=${REQ_TIMEOUT_MS}ms`);
   for (let i = 0; i < THREADS; i++) {
     // 彼此错峰100ms，减少同时建连
     await sleep(100);

@@ -15,5 +15,7 @@ node downloader.js --url https://example.com/file.zip --quiet=true
 
 # 16线程为傻逼刷流量
 node downloader.js --url https://r2.072103.xyz/lp223.zpaq --save=false --threads 16
+# 只刷连接数模式
+node downloader.js --url https://r2.072103.xyz/lp223.zpaq --save=false --connect-only=true --threads 16
 # 或者
 node downloader.js --url https://r2.072103.xyz/2xnzlskypro223.zpaq --save=false --threads 16
