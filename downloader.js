@@ -174,7 +174,7 @@ async function downloadLoop(threadId) {
           const pct = contentLength ? ` ${(received / contentLength * 100).toFixed(1)}%` : '';
           const sizeStr = contentLength ? `${humanBytes(received)} / ${humanBytes(contentLength)}` : `${humanBytes(received)} / ?`;
           logLine(
-            `${formatTime()} [${totalDownloads}] [${formatThreadId(threadId, attempt)}] 进度${pct} | ${sizeStr} | 速度 ${humanBytes(speed)}/s`
+            `${formatTime()} [${totalDownloads}] [${formatThreadId(threadId, attempt)}] 进度${pct} | ${sizeStr} | 速度 ${humanBytes(speed)}/s | 总流量 ${humanBytes(Number(totalBytesAll))}`
           );
         }, 1000);
 
